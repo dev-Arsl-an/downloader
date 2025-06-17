@@ -1,15 +1,25 @@
+# Use Node.js 18 with slim Linux
 FROM node:18-slim
 
-# Install system dependencies for yt-dlp
+# Update package lists and install system dependencies
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
+    python3-venv \
     ffmpeg \
     curl \
+    wget \
+    ca-certificates \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Install yt-dlp globally
-RUN pip3 install --upgrade yt-dlp
+# Create a virtual environment and install yt-dlp
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Upgrade pip and install yt-dlp with proper error handling
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir yt-dlp
 
 # Set working directory
 WORKDIR /app
