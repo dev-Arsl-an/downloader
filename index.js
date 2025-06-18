@@ -109,7 +109,7 @@ const isValidUrl = (string) => {
 
 const isSupportedDomain = (url) => {
   const supportedDomains = [
-    'youtube.com', 'youtu.be', 'tiktok.com', 'instagram.com',
+    'youtube.com', 'youtu.be', 'tiktok.com', 'vm.tiktok.com', 'instagram.com',
     'facebook.com'
   ];
   
@@ -187,46 +187,46 @@ const buildDownloadCommand = (url, outputPath) => {
     '--force-ipv4',
     '--socket-timeout', '30',
     '--source-address', '0.0.0.0',
-    '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-    '-o', outputPath
+    '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
   ];
+
+  // Fix: Properly escape output path with single quotes
+  baseCmd.push('-o', `'${outputPath}'`);
 
   // Add cookies if available
   const cookiesPath = path.join(__dirname, 'cookies.txt');
   if (fs.existsSync(cookiesPath)) {
-    baseCmd.push('--cookies', cookiesPath);
+    baseCmd.push('--cookies', `'${cookiesPath}'`);
   }
 
-  // Add proxies if available
-  const proxiesPath = path.join(__dirname, 'proxies.txt');
-  if (fs.existsSync(proxiesPath)) {
-    baseCmd.push('--proxy-file', proxiesPath);
-  }
-
-  // Platform-specific optimizations
-  if (url.includes('tiktok.com')) {
+  // Platform-specific configurations
+  if (url.includes('tiktok.com') || url.includes('vm.tiktok.com')) {
+    // TikTok specific settings
     baseCmd.push(
-      '--add-header', 'User-Agent:"Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"',
-      '--add-header', 'Referer:"https://www.tiktok.com/"',
+      '--referer', '"https://www.tiktok.com/"',
+      '--add-header', '"User-Agent:Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"',
+      '--add-header', '"Referer:https://www.tiktok.com/"',
+      '--extractor-args', '"tiktok:skip_hybrid_manifest=true"',
       '--extractor-retries', '5',
       '--fragment-retries', '5',
       '--retry-sleep', '1'
     );
   } else if (url.includes('instagram.com')) {
     baseCmd.push(
-      '--add-header', 'User-Agent:"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"',
-      '--add-header', 'Referer:"https://www.instagram.com/"'
+      '--add-header', '"User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"',
+      '--add-header', '"Referer:https://www.instagram.com/"'
     );
   } else {
     // Default headers for all requests
     baseCmd.push(
-      '--add-header', 'User-Agent:"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"',
-      '--add-header', 'Accept-Language:"en-US,en;q=0.9"',
-      '--add-header', 'Referer:"https://www.google.com/"'
+      '--add-header', '"User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"',
+      '--add-header', '"Accept-Language:en-US,en;q=0.9"',
+      '--add-header', '"Referer:https://www.google.com/"'
     );
   }
 
-  baseCmd.push(sanitizeUrl(url));
+  // Fix: Properly escape URL with single quotes
+  baseCmd.push(`'${sanitizeUrl(url)}'`);
   return baseCmd.join(' ');
 };
 
@@ -238,19 +238,6 @@ app.get('/health', (req, res) => {
     uptime: process.uptime(),
     memory: process.memoryUsage(),
     ytDlpMethod: ytDlpMethod
-  });
-});
-
-app.get('/', (req, res) => {
-  res.json({
-    service: 'Video Downloader API',
-    status: 'running',
-    endpoints: {
-      health: 'GET /health',
-      extract: 'POST /extract',
-      download: 'POST /download'
-    },
-    supportedPlatforms: ['YouTube', 'Instagram', 'Facebook', 'TikTok']
   });
 });
 
@@ -282,7 +269,8 @@ app.post('/download', rateLimit, async (req, res) => {
 
   const timestamp = Date.now();
   const randomId = Math.random().toString(36).substring(7);
-  const outputTemplate = path.join(downloadsDir, `video_${timestamp}_${randomId}_%(title)s.%(ext)s`);
+  // Fix: Use static filename for initial testing
+  const outputTemplate = path.join(downloadsDir, `video_${timestamp}_${randomId}.mp4`);
 
   try {
     const command = buildDownloadCommand(url, outputTemplate);
@@ -305,7 +293,7 @@ app.post('/download', rateLimit, async (req, res) => {
 
     // Find the downloaded file
     const files = fs.readdirSync(downloadsDir).filter(file => 
-      file.startsWith(`video_${timestamp}_${randomId}_`)
+      file.startsWith(`video_${timestamp}_${randomId}`)
     );
 
     if (files.length === 0) {
@@ -379,136 +367,6 @@ app.post('/download', rateLimit, async (req, res) => {
   }
 });
 
-app.post('/extract', rateLimit, async (req, res) => {
-  const { url } = req.body;
-  
-  if (!url || typeof url !== 'string') {
-    return res.status(400).json({
-      success: false,
-      message: 'Valid URL is required'
-    });
-  }
-
-  if (!isValidUrl(url)) {
-    return res.status(400).json({
-      success: false,
-      message: 'Invalid URL format'
-    });
-  }
-
-  if (!isSupportedDomain(url)) {
-    return res.status(400).json({
-      success: false,
-      message: 'Unsupported domain. Supported: YouTube, TikTok, Instagram, Facebook'
-    });
-  }
-
-  console.log(`📥 Processing extraction request: ${url}`);
-
-  try {
-    const baseCommand = ytDlpMethod === 'python3' 
-      ? 'python3 -m yt_dlp' 
-      : ytDlpMethod === 'python' 
-      ? 'python -m yt_dlp' 
-      : 'yt-dlp';
-    
-    const cookiesFlag = fs.existsSync(path.join(__dirname, 'cookies.txt')) ? '--cookies cookies.txt' : '';
-    const command = `${baseCommand} --no-playlist --no-warnings --ignore-errors -f best --get-url ${cookiesFlag} "${sanitizeUrl(url)}"`;
-    
-    console.log(`🔧 Executing extraction command: ${command}`);
-    
-    const { stdout, stderr } = await execAsync(command, {
-      timeout: 45000,
-      maxBuffer: 1024 * 1024,
-      killSignal: 'SIGKILL'
-    });
-
-    if (stderr && stderr.includes('ERROR')) {
-      console.error(`❌ yt-dlp error: ${stderr}`);
-      return res.status(500).json({
-        success: false,
-        message: 'Video extraction failed',
-        error: stderr
-      });
-    }
-
-    const urls = stdout.trim()
-      .split('\n')
-      .filter(line => line.startsWith('http'))
-      .map(line => line.trim());
-
-    if (urls.length === 0) {
-      console.warn(`⚠️ No video URLs found for: ${url}`);
-      return res.status(404).json({
-        success: false,
-        message: 'No downloadable video found'
-      });
-    }
-
-    const directUrl = urls[0];
-    console.log(`✅ Successfully extracted video URL`);
-    
-    res.json({
-      success: true,
-      url: directUrl,
-      extractedAt: new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error(`❌ Extraction failed for ${url}:`, error.message);
-    
-    if (error.code === 'TIMEOUT' || error.killed) {
-      return res.status(408).json({
-        success: false,
-        message: 'Request timeout - video extraction took too long'
-      });
-    }
-
-    res.status(500).json({
-      success: false,
-      message: 'Internal server error during video extraction',
-      error: error.message
-    });
-  }
-});
-
-// Error handling
-app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err);
-  res.status(500).json({
-    success: false,
-    message: 'Internal server error',
-    error: err.message
-  });
-});
-
-app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    message: 'Endpoint not found'
-  });
-});
-
-// Process handlers
-process.on('SIGTERM', () => {
-  console.log('📴 Received SIGTERM, shutting down gracefully');
-  process.exit(0);
-});
-
-process.on('SIGINT', () => {
-  console.log('📴 Received SIGINT, shutting down gracefully');
-  process.exit(0);
-});
-
-process.on('uncaughtException', (error) => {
-  console.error('❌ Uncaught Exception:', error);
-  process.exit(1);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
-});
-
 // Start server
 const PORT = process.env.PORT || 8080;
 
@@ -528,8 +386,7 @@ const startServer = async () => {
   const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ Video Downloader API running on port ${PORT}`);
     console.log(`🔗 Health check: http://localhost:${PORT}/health`);
-    console.log(`📥 Extract URL: POST /extract`);
-    console.log(`📁 Download file: POST /download`);
+    console.log(`📥 Download file: POST /download`);
     console.log(`🎯 Supported platforms: YouTube, Instagram, Facebook, TikTok`);
   });
 
