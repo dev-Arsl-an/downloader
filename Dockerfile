@@ -2,7 +2,7 @@ FROM node:18-alpine
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies with increased limits
 RUN apk update && \
     apk add --no-cache \
     python3 \
@@ -18,6 +18,10 @@ RUN python3 -m venv /opt/venv && \
 # Ensure the virtual environment is in PATH
 ENV PATH="/opt/venv/bin:$PATH"
 
+# Increase system limits for large downloads
+RUN echo "fs.file-max = 1000000" >> /etc/sysctl.conf && \
+    echo "vm.max_map_count=262144" >> /etc/sysctl.conf
+
 COPY package*.json ./
 RUN npm install --production
 
@@ -27,9 +31,9 @@ COPY . .
 RUN touch cookies.txt proxies.txt && \
     chmod 644 cookies.txt proxies.txt
 
-# Create downloads directory
+# Create downloads directory with unlimited quota
 RUN mkdir -p /tmp/downloads && \
     chmod 777 /tmp/downloads
 
 EXPOSE 8080
-CMD ["node", "index.js"]
+CMD ["node", "--max-http-header-size=16384", "index.js"]
