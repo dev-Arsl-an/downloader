@@ -8,7 +8,7 @@ const { promisify } = require('util');
 const execAsync = promisify(exec);
 const app = express();
 
-// Helper functions for filename sanitization
+// Helper functions
 const sanitizeFilename = (filename) => {
   return filename
     .replace(/[^\w\s\-_.()[\]]/g, '_') 
@@ -29,34 +29,38 @@ app.use(cors({
   credentials: true
 }));
 
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ 
+  limit: '1mb',
+  verify: (req, res, buf) => {
+    try {
+      JSON.parse(buf.toString());
+    } catch (e) {
+      throw new Error('Invalid JSON');
+    }
+  }
+}));
 
-// Create downloads directory with proper error handling for Railway
-const downloadsDir = path.join(__dirname, 'downloads');
+// Storage configuration for Railway
+const downloadsDir = process.env.RAILWAY_VOLUME_MOUNT_PATH || 
+                   path.join(__dirname, 'downloads') || 
+                   '/tmp/downloads';
+
+// Ensure downloads directory exists
 try {
   if (!fs.existsSync(downloadsDir)) {
     fs.mkdirSync(downloadsDir, { recursive: true });
+    console.log(`✅ Created downloads directory: ${downloadsDir}`);
   }
 } catch (error) {
-  console.warn('⚠️ Warning: Could not create downloads directory:', error.message);
-  // Use /tmp directory as fallback on Railway
-  const tmpDir = '/tmp/downloads';
-  try {
-    if (!fs.existsSync(tmpDir)) {
-      fs.mkdirSync(tmpDir, { recursive: true });
-    }
-    console.log('✅ Using /tmp/downloads as fallback directory');
-  } catch (tmpError) {
-    console.error('❌ Cannot create any downloads directory');
-  }
+  console.error('❌ Failed to create downloads directory:', error.message);
+  process.exit(1);
 }
 
-// Rate limiting with memory cleanup
+// Rate limiting
 const rateLimitMap = new Map();
 const RATE_LIMIT_WINDOW = 60000; 
 const RATE_LIMIT_MAX_REQUESTS = 10;
 
-// Clean up old rate limit entries periodically
 setInterval(() => {
   const now = Date.now();
   for (const [ip, data] of rateLimitMap.entries()) {
@@ -123,7 +127,7 @@ const sanitizeUrl = (url) => {
   return url.replace(/[;&|`$(){}[\]\\]/g, '').substring(0, 500);
 };
 
-// Check yt-dlp with Railway compatibility
+// Check yt-dlp
 const checkYtDlp = async () => {
   try {
     const { stdout } = await execAsync('yt-dlp --version', { timeout: 15000 });
@@ -149,7 +153,7 @@ const checkYtDlp = async () => {
   }
 };
 
-// Check cookies file with error handling
+// Check cookies file
 const checkCookiesFile = () => {
   try {
     const cookiesPath = path.join(__dirname, 'cookies.txt');
@@ -180,40 +184,53 @@ const buildDownloadCommand = (url, outputPath) => {
     '--no-playlist',
     '--no-warnings',
     '--ignore-errors',
-    '-f', 'best',
-    '-o', `"${outputPath}"`
+    '--force-ipv4',
+    '--socket-timeout', '30',
+    '--source-address', '0.0.0.0',
+    '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+    '-o', outputPath
   ];
 
   // Add cookies if available
-  try {
-    if (fs.existsSync(path.join(__dirname, 'cookies.txt'))) {
-      baseCmd.push('--cookies', 'cookies.txt');
-    }
-  } catch (error) {
-    console.warn('⚠️ Could not check cookies file');
+  const cookiesPath = path.join(__dirname, 'cookies.txt');
+  if (fs.existsSync(cookiesPath)) {
+    baseCmd.push('--cookies', cookiesPath);
+  }
+
+  // Add proxies if available
+  const proxiesPath = path.join(__dirname, 'proxies.txt');
+  if (fs.existsSync(proxiesPath)) {
+    baseCmd.push('--proxy-file', proxiesPath);
   }
 
   // Platform-specific optimizations
   if (url.includes('tiktok.com')) {
     baseCmd.push(
-      '--add-header', '"User-Agent: Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"',
-      '--add-header', '"Referer: https://www.tiktok.com/"',
+      '--add-header', 'User-Agent:"Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"',
+      '--add-header', 'Referer:"https://www.tiktok.com/"',
       '--extractor-retries', '5',
       '--fragment-retries', '5',
       '--retry-sleep', '1'
     );
   } else if (url.includes('instagram.com')) {
     baseCmd.push(
-      '--add-header', '"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"',
-      '--add-header', '"Referer: https://www.instagram.com/"'
+      '--add-header', 'User-Agent:"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"',
+      '--add-header', 'Referer:"https://www.instagram.com/"'
+    );
+  } else {
+    // Default headers for all requests
+    baseCmd.push(
+      '--add-header', 'User-Agent:"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"',
+      '--add-header', 'Accept-Language:"en-US,en;q=0.9"',
+      '--add-header', 'Referer:"https://www.google.com/"'
     );
   }
 
-  baseCmd.push(`"${sanitizeUrl(url)}"`);
+  baseCmd.push(sanitizeUrl(url));
   return baseCmd.join(' ');
 };
 
-// Health check endpoint
+// Endpoints
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
@@ -224,7 +241,6 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Root endpoint
 app.get('/', (req, res) => {
   res.json({
     service: 'Video Downloader API',
@@ -241,7 +257,6 @@ app.get('/', (req, res) => {
 app.post('/download', rateLimit, async (req, res) => {
   const { url } = req.body;
   
-  // Input validation
   if (!url || typeof url !== 'string') {
     return res.status(400).json({
       success: false,
@@ -265,19 +280,17 @@ app.post('/download', rateLimit, async (req, res) => {
 
   console.log(`📥 Processing download request: ${url}`);
 
-  // Generate unique filename
   const timestamp = Date.now();
   const randomId = Math.random().toString(36).substring(7);
-  const safeDownloadsDir = fs.existsSync(downloadsDir) ? downloadsDir : '/tmp/downloads';
-  const outputTemplate = path.join(safeDownloadsDir, `video_${timestamp}_${randomId}_%(title)s.%(ext)s`);
+  const outputTemplate = path.join(downloadsDir, `video_${timestamp}_${randomId}_%(title)s.%(ext)s`);
 
   try {
     const command = buildDownloadCommand(url, outputTemplate);
-    console.log(`🔧 Executing download command`);
+    console.log(`🔧 Executing download command: ${command}`);
     
     const { stdout, stderr } = await execAsync(command, {
-      timeout: 180000, // 3 minute timeout for Railway
-      maxBuffer: 50 * 1024 * 1024, // 50MB buffer
+      timeout: 180000,
+      maxBuffer: 50 * 1024 * 1024,
       killSignal: 'SIGKILL'
     });
 
@@ -286,23 +299,14 @@ app.post('/download', rateLimit, async (req, res) => {
       return res.status(500).json({
         success: false,
         message: 'Video download failed',
-        error: 'Unable to download video from this URL'
+        error: stderr
       });
     }
 
     // Find the downloaded file
-    let files = [];
-    try {
-      files = fs.readdirSync(safeDownloadsDir).filter(file => 
-        file.startsWith(`video_${timestamp}_${randomId}_`)
-      );
-    } catch (readError) {
-      console.error('Error reading downloads directory:', readError);
-      return res.status(500).json({
-        success: false,
-        message: 'Error accessing downloaded files'
-      });
-    }
+    const files = fs.readdirSync(downloadsDir).filter(file => 
+      file.startsWith(`video_${timestamp}_${randomId}_`)
+    );
 
     if (files.length === 0) {
       console.warn(`⚠️ No downloaded file found`);
@@ -313,18 +317,8 @@ app.post('/download', rateLimit, async (req, res) => {
     }
 
     const downloadedFile = files[0];
-    const filePath = path.join(safeDownloadsDir, downloadedFile);
-    
-    let fileStats;
-    try {
-      fileStats = fs.statSync(filePath);
-    } catch (statError) {
-      console.error('Error getting file stats:', statError);
-      return res.status(500).json({
-        success: false,
-        message: 'Error accessing downloaded file'
-      });
-    }
+    const filePath = path.join(downloadsDir, downloadedFile);
+    const fileStats = fs.statSync(filePath);
 
     console.log(`✅ Successfully downloaded: ${downloadedFile} (${fileStats.size} bytes)`);
     
@@ -350,7 +344,6 @@ app.post('/download', rateLimit, async (req, res) => {
     });
     
     fileStream.on('end', () => {
-      // Delete the file after sending with timeout
       setTimeout(() => {
         fs.unlink(filePath, (err) => {
           if (err) console.error('Error deleting file:', err);
@@ -380,7 +373,8 @@ app.post('/download', rateLimit, async (req, res) => {
 
     res.status(500).json({
       success: false,
-      message: 'Internal server error during video download'
+      message: 'Internal server error during video download',
+      error: error.message
     });
   }
 });
@@ -388,7 +382,6 @@ app.post('/download', rateLimit, async (req, res) => {
 app.post('/extract', rateLimit, async (req, res) => {
   const { url } = req.body;
   
-  // Input validation
   if (!url || typeof url !== 'string') {
     return res.status(400).json({
       success: false,
@@ -422,10 +415,10 @@ app.post('/extract', rateLimit, async (req, res) => {
     const cookiesFlag = fs.existsSync(path.join(__dirname, 'cookies.txt')) ? '--cookies cookies.txt' : '';
     const command = `${baseCommand} --no-playlist --no-warnings --ignore-errors -f best --get-url ${cookiesFlag} "${sanitizeUrl(url)}"`;
     
-    console.log(`🔧 Executing extraction command`);
+    console.log(`🔧 Executing extraction command: ${command}`);
     
     const { stdout, stderr } = await execAsync(command, {
-      timeout: 45000, // 45 second timeout
+      timeout: 45000,
       maxBuffer: 1024 * 1024,
       killSignal: 'SIGKILL'
     });
@@ -435,7 +428,7 @@ app.post('/extract', rateLimit, async (req, res) => {
       return res.status(500).json({
         success: false,
         message: 'Video extraction failed',
-        error: 'Unable to extract video from this URL'
+        error: stderr
       });
     }
 
@@ -473,21 +466,22 @@ app.post('/extract', rateLimit, async (req, res) => {
 
     res.status(500).json({
       success: false,
-      message: 'Internal server error during video extraction'
+      message: 'Internal server error during video extraction',
+      error: error.message
     });
   }
 });
 
-// Error handling middleware
+// Error handling
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
   res.status(500).json({
     success: false,
-    message: 'Internal server error'
+    message: 'Internal server error',
+    error: err.message
   });
 });
 
-// 404 handler
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -495,7 +489,7 @@ app.use((req, res) => {
   });
 });
 
-// Graceful shutdown handlers
+// Process handlers
 process.on('SIGTERM', () => {
   console.log('📴 Received SIGTERM, shutting down gracefully');
   process.exit(0);
@@ -506,7 +500,6 @@ process.on('SIGINT', () => {
   process.exit(0);
 });
 
-// Handle uncaught exceptions
 process.on('uncaughtException', (error) => {
   console.error('❌ Uncaught Exception:', error);
   process.exit(1);
@@ -517,21 +510,19 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 // Start server
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 
 const startServer = async () => {
   console.log('🚀 Starting Video Downloader API...');
   console.log('🔧 Environment:', process.env.NODE_ENV || 'development');
   
   // Pre-flight checks
-  const ytDlpAvailable = await checkYtDlp();
-  if (!ytDlpAvailable) {
+  ytDlpMethod = await checkYtDlp();
+  if (!ytDlpMethod) {
     console.error('❌ Cannot start server: yt-dlp is not available');
-    console.log('💡 Make sure yt-dlp is installed: pip install yt-dlp');
     process.exit(1);
   }
   
-  ytDlpMethod = ytDlpAvailable;
   checkCookiesFile();
   
   const server = app.listen(PORT, '0.0.0.0', () => {
@@ -542,10 +533,9 @@ const startServer = async () => {
     console.log(`🎯 Supported platforms: YouTube, Instagram, Facebook, TikTok`);
   });
 
-  // Set server timeout for Railway
-  server.timeout = 300000; // 5 minutes
-  server.keepAliveTimeout = 65000; // 65 seconds
-  server.headersTimeout = 66000; // 66 seconds
+  server.timeout = 300000;
+  server.keepAliveTimeout = 65000;
+  server.headersTimeout = 66000;
 };
 
 startServer().catch(error => {
