@@ -1,12 +1,13 @@
 [build]
-builder = "dockerfile"
+builder = "nixpacks"
 
 [deploy]
-healthcheckPath = "/health"
-healthcheckTimeout = 100
-restartPolicyType = "on_failure"
-restartPolicyMaxRetries = 3
+startCommand = "node index.js"
 
-[environments.production]
-[environments.production.variables]
+[variables]
 NODE_ENV = "production"
+PORT = "8080"
+RAILWAY_VOLUME_MOUNT_PATH = "/tmp/downloads"
+
+[volumes]
+downloads = "/tmp/downloads"
