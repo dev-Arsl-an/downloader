@@ -31,7 +31,7 @@ const initializeSystem = () => {
 
 const cleanupFile = (filePath) => {
   try {
-    if (fs.existsSync(filePath) {
+    if (fs.existsSync(filePath)) {
       fs.unlinkSync(filePath);
     }
   } catch (err) {
