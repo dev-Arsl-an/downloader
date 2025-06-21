@@ -122,7 +122,7 @@ const sanitizeFilename = (filename) => {
 const activeDownloads = new Set();
 
 const cleanupFile = (filePath) => {
-  if (fs.existsSync(filePath) {
+  if (fs.existsSync(filePath)) {
     fs.unlink(filePath, (err) => {
       if (err) {
         console.error('❌ Failed to delete file:', filePath, err);
